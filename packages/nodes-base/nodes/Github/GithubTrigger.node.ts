@@ -7,7 +7,7 @@ import type {
 	IWebhookResponseData,
 	JsonObject,
 } from 'n8n-workflow';
-import { NodeApiError, NodeOperationError } from 'n8n-workflow';
+import { NodeConnectionTypes, NodeApiError, NodeOperationError } from 'n8n-workflow';
 
 import { githubApiRequest } from './GenericFunctions';
 import { getRepositories, getUsers } from './SearchFunctions';
@@ -16,7 +16,7 @@ export class GithubTrigger implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Github Trigger',
 		name: 'githubTrigger',
-		icon: 'file:github.svg',
+		icon: { light: 'file:github.svg', dark: 'file:github.dark.svg' },
 		group: ['trigger'],
 		version: 1,
 		subtitle:
@@ -26,7 +26,7 @@ export class GithubTrigger implements INodeType {
 			name: 'Github Trigger',
 		},
 		inputs: [],
-		outputs: ['main'],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'githubApi',
@@ -438,7 +438,7 @@ export class GithubTrigger implements INodeType {
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
-				placeholder: 'Add Option',
+				placeholder: 'Add option',
 				default: {},
 				options: [
 					{
@@ -474,7 +474,7 @@ export class GithubTrigger implements INodeType {
 				try {
 					await githubApiRequest.call(this, 'GET', endpoint, {});
 				} catch (error) {
-					if (error.cause.httpCode === '404') {
+					if (error.httpCode === '404') {
 						// Webhook does not exist
 						delete webhookData.webhookId;
 						delete webhookData.webhookEvents;
@@ -524,7 +524,7 @@ export class GithubTrigger implements INodeType {
 				try {
 					responseData = await githubApiRequest.call(this, 'POST', endpoint, body);
 				} catch (error) {
-					if (error.cause.httpCode === '422') {
+					if (error.httpCode === '422') {
 						// Webhook exists already
 
 						// Get the data of the already registered webhook
@@ -550,7 +550,7 @@ export class GithubTrigger implements INodeType {
 						);
 					}
 
-					if (error.cause.httpCode === '404') {
+					if (error.httpCode === '404') {
 						throw new NodeOperationError(
 							this.getNode(),
 							'Check that the repository exists and that you have permission to create the webhooks this node requires',

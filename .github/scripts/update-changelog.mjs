@@ -5,10 +5,11 @@ import { createReadStream, createWriteStream } from 'fs';
 import { dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { pipeline } from 'stream/promises';
-import packageJson from '../../package.json' assert { type: 'json' };
+import packageJson from '../../package.json' with { type: 'json' };
 
 const baseDir = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const fullChangelogFile = resolve(baseDir, 'CHANGELOG.md');
+// Version includes experimental versions (e.g., 1.2.3-exp.0)
 const versionChangelogFile = resolve(baseDir, `CHANGELOG-${packageJson.version}.md`);
 
 const changelogStream = conventionalChangelog({
@@ -16,7 +17,11 @@ const changelogStream = conventionalChangelog({
 	releaseCount: 1,
 	tagPrefix: 'n8n@',
 	transform: (commit, callback) => {
-		callback(null, commit.header.includes('(no-changelog)') ? undefined : commit);
+		const hasNoChangelogInHeader = commit.header.includes('(no-changelog)');
+		const isBenchmarkScope = commit.scope === 'benchmark';
+
+		// Ignore commits that have 'benchmark' scope or '(no-changelog)' in the header
+		callback(null, hasNoChangelogInHeader || isBenchmarkScope ? undefined : commit);
 	},
 }).on('error', (err) => {
 	console.error(err.stack);

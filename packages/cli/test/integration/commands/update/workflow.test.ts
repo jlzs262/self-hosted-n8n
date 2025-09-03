@@ -1,24 +1,19 @@
-import { Config } from '@oclif/core';
-import { InternalHooks } from '@/InternalHooks';
-import { LoadNodesAndCredentials } from '@/LoadNodesAndCredentials';
+import {
+	mockInstance,
+	testDb,
+	createWorkflowWithTrigger,
+	getAllWorkflows,
+} from '@n8n/backend-test-utils';
+
 import { UpdateWorkflowCommand } from '@/commands/update/workflow';
+import { LoadNodesAndCredentials } from '@/load-nodes-and-credentials';
+import { setupTestCommand } from '@test-integration/utils/test-command';
 
-import * as testDb from '../../shared/testDb';
-import { createWorkflowWithTrigger, getAllWorkflows } from '../../shared/db/workflows';
-import { mockInstance } from '../../../shared/mocking';
-
-beforeAll(async () => {
-	mockInstance(InternalHooks);
-	mockInstance(LoadNodesAndCredentials);
-	await testDb.init();
-});
+mockInstance(LoadNodesAndCredentials);
+const command = setupTestCommand(UpdateWorkflowCommand);
 
 beforeEach(async () => {
-	await testDb.truncate(['Workflow']);
-});
-
-afterAll(async () => {
-	await testDb.terminate();
+	await testDb.truncate(['WorkflowEntity']);
 });
 
 test('update:workflow can activate all workflows', async () => {
@@ -34,10 +29,7 @@ test('update:workflow can activate all workflows', async () => {
 	//
 	// ACT
 	//
-	const config = new Config({ root: __dirname });
-	const updater = new UpdateWorkflowCommand(['--all', '--active=true'], config);
-	await updater.init();
-	await updater.run();
+	await command.run(['--all', '--active=true']);
 
 	//
 	// ASSERT
@@ -59,10 +51,7 @@ test('update:workflow can deactivate all workflows', async () => {
 	//
 	// ACT
 	//
-	const config = new Config({ root: __dirname });
-	const updater = new UpdateWorkflowCommand(['--all', '--active=false'], config);
-	await updater.init();
-	await updater.run();
+	await command.run(['--all', '--active=false']);
 
 	//
 	// ASSERT
@@ -86,10 +75,7 @@ test('update:workflow can activate a specific workflow', async () => {
 	//
 	// ACT
 	//
-	const config = new Config({ root: __dirname });
-	const updater = new UpdateWorkflowCommand([`--id=${workflows[0].id}`, '--active=true'], config);
-	await updater.init();
-	await updater.run();
+	await command.run([`--id=${workflows[0].id}`, '--active=true']);
 
 	//
 	// ASSERT
@@ -113,10 +99,7 @@ test('update:workflow can deactivate a specific workflow', async () => {
 	//
 	// ACT
 	//
-	const config = new Config({ root: __dirname });
-	const updater = new UpdateWorkflowCommand([`--id=${workflows[0].id}`, '--active=false'], config);
-	await updater.init();
-	await updater.run();
+	await command.run([`--id=${workflows[0].id}`, '--active=false']);
 
 	//
 	// ASSERT

@@ -1,21 +1,18 @@
-import Container from 'typedi';
+import { createWorkflow, testDb, mockInstance } from '@n8n/backend-test-utils';
+import { SharedWorkflowRepository, WorkflowRepository } from '@n8n/db';
+import { Container } from '@n8n/di';
 import { mock } from 'jest-mock-extended';
-import { ActiveWorkflowManager } from '@/ActiveWorkflowManager';
-import { SharedWorkflowRepository } from '@db/repositories/sharedWorkflow.repository';
-import { WorkflowRepository } from '@db/repositories/workflow.repository';
-import { MessageEventBus } from '@/eventbus/MessageEventBus/MessageEventBus';
+
+import { ActiveWorkflowManager } from '@/active-workflow-manager';
+import { MessageEventBus } from '@/eventbus/message-event-bus/message-event-bus';
 import { Telemetry } from '@/telemetry';
-import { OrchestrationService } from '@/services/orchestration.service';
+import { WorkflowFinderService } from '@/workflows/workflow-finder.service';
 import { WorkflowService } from '@/workflows/workflow.service';
 
-import * as testDb from '../shared/testDb';
-import { mockInstance } from '../../shared/mocking';
 import { createOwner } from '../shared/db/users';
-import { createWorkflow } from '../shared/db/workflows';
 
 let workflowService: WorkflowService;
 const activeWorkflowManager = mockInstance(ActiveWorkflowManager);
-const orchestrationService = mockInstance(OrchestrationService);
 mockInstance(MessageEventBus);
 mockInstance(Telemetry);
 
@@ -24,7 +21,6 @@ beforeAll(async () => {
 
 	workflowService = new WorkflowService(
 		mock(),
-		mock(),
 		Container.get(SharedWorkflowRepository),
 		Container.get(WorkflowRepository),
 		mock(),
@@ -32,19 +28,22 @@ beforeAll(async () => {
 		mock(),
 		mock(),
 		mock(),
-		orchestrationService,
 		mock(),
 		activeWorkflowManager,
+		mock(),
+		mock(),
+		mock(),
+		mock(),
+		mock(),
+		mock(),
+		mock(),
+		Container.get(WorkflowFinderService),
 	);
 });
 
 afterEach(async () => {
-	await testDb.truncate(['Workflow']);
+	await testDb.truncate(['WorkflowEntity']);
 	jest.restoreAllMocks();
-});
-
-afterAll(async () => {
-	await testDb.terminate();
 });
 
 describe('update()', () => {

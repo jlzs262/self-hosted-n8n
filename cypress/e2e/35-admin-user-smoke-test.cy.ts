@@ -1,23 +1,22 @@
-import { INSTANCE_ADMIN, INSTANCE_OWNER } from '../constants';
-import { SettingsPage } from '../pages/settings';
+const url = '/settings';
 
-const settingsPage = new SettingsPage();
-
-describe('Admin user', { disableAutoLogin: true }, () => {
+// Migrated to Playwright
+// eslint-disable-next-line n8n-local-rules/no-skipped-tests
+describe.skip('Admin user', { disableAutoLogin: true }, () => {
 	it('should see same Settings sub menu items as instance owner', () => {
-		cy.signin(INSTANCE_OWNER);
-		cy.visit(settingsPage.url);
+		cy.signinAsOwner();
+		cy.visit(url);
 
 		let ownerMenuItems = 0;
 
-		settingsPage.getters.menuItems().then(($el) => {
+		cy.getByTestId('menu-item').then(($el) => {
 			ownerMenuItems = $el.length;
 		});
 
 		cy.signout();
-		cy.signin(INSTANCE_ADMIN);
-		cy.visit(settingsPage.url);
+		cy.signinAsAdmin();
+		cy.visit(url);
 
-		settingsPage.getters.menuItems().should('have.length', ownerMenuItems);
+		cy.getByTestId('menu-item').should('have.length', ownerMenuItems);
 	});
 });

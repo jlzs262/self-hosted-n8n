@@ -1,12 +1,18 @@
-import { Container } from 'typedi';
-import type { CredentialsEntity } from '@db/entities/CredentialsEntity';
-import { User } from '@db/entities/User';
-import { CredentialsRepository } from '@db/repositories/credentials.repository';
-import { SettingsRepository } from '@db/repositories/settings.repository';
-import { SharedCredentialsRepository } from '@db/repositories/sharedCredentials.repository';
-import { SharedWorkflowRepository } from '@db/repositories/sharedWorkflow.repository';
-import { UserRepository } from '@db/repositories/user.repository';
-import { BaseCommand } from '../BaseCommand';
+import type { CredentialsEntity } from '@n8n/db';
+import {
+	User,
+	CredentialsRepository,
+	ProjectRepository,
+	SettingsRepository,
+	SharedCredentialsRepository,
+	SharedWorkflowRepository,
+	UserRepository,
+	GLOBAL_OWNER_ROLE,
+} from '@n8n/db';
+import { Command } from '@n8n/decorators';
+import { Container } from '@n8n/di';
+
+import { BaseCommand } from '../base-command';
 
 const defaultUserProps = {
 	firstName: null,
@@ -16,16 +22,19 @@ const defaultUserProps = {
 	role: 'global:owner',
 };
 
+@Command({
+	name: 'user-management:reset',
+	description: 'Resets the database to the default user state',
+})
 export class Reset extends BaseCommand {
-	static description = 'Resets the database to the default user state';
-
-	static examples = ['$ n8n user-management:reset'];
-
 	async run(): Promise<void> {
 		const owner = await this.getInstanceOwner();
+		const personalProject = await Container.get(ProjectRepository).getPersonalProjectForUserOrFail(
+			owner.id,
+		);
 
-		await Container.get(SharedWorkflowRepository).makeOwnerOfAllWorkflows(owner);
-		await Container.get(SharedCredentialsRepository).makeOwnerOfAllCredentials(owner);
+		await Container.get(SharedWorkflowRepository).makeOwnerOfAllWorkflows(personalProject);
+		await Container.get(SharedCredentialsRepository).makeOwnerOfAllCredentials(personalProject);
 
 		await Container.get(UserRepository).deleteAllExcept(owner);
 		await Container.get(UserRepository).save(Object.assign(owner, defaultUserProps));
@@ -38,7 +47,7 @@ export class Reset extends BaseCommand {
 		const newSharedCredentials = danglingCredentials.map((credentials) =>
 			Container.get(SharedCredentialsRepository).create({
 				credentials,
-				user: owner,
+				projectId: personalProject.id,
 				role: 'credential:owner',
 			}),
 		);
@@ -53,7 +62,9 @@ export class Reset extends BaseCommand {
 	}
 
 	async getInstanceOwner(): Promise<User> {
-		const owner = await Container.get(UserRepository).findOneBy({ role: 'global:owner' });
+		const owner = await Container.get(UserRepository).findOneBy({
+			role: { slug: GLOBAL_OWNER_ROLE.slug },
+		});
 
 		if (owner) return owner;
 
@@ -63,12 +74,14 @@ export class Reset extends BaseCommand {
 
 		await Container.get(UserRepository).save(user);
 
-		return await Container.get(UserRepository).findOneByOrFail({ role: 'global:owner' });
+		return await Container.get(UserRepository).findOneByOrFail({
+			role: { slug: GLOBAL_OWNER_ROLE.slug },
+		});
 	}
 
 	async catch(error: Error): Promise<void> {
 		this.logger.error('Error resetting database. See log messages for details.');
 		this.logger.error(error.message);
-		this.exit(1);
+		process.exit(1);
 	}
 }

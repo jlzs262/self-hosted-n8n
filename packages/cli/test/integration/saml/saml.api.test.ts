@@ -1,17 +1,21 @@
-import { Container } from 'typedi';
-import type { SuperAgentTest } from 'supertest';
-import type { AuthenticationMethod } from 'n8n-workflow';
-import type { User } from '@db/entities/User';
-import { setSamlLoginEnabled } from '@/sso/saml/samlHelpers';
-import { getCurrentAuthenticationMethod, setCurrentAuthenticationMethod } from '@/sso/ssoHelpers';
-import { InternalHooks } from '@/InternalHooks';
-import { SamlService } from '@/sso/saml/saml.service.ee';
-import type { SamlUserAttributes } from '@/sso/saml/types/samlUserAttributes';
+import { randomEmail, randomName, randomValidPassword } from '@n8n/backend-test-utils';
+import { GlobalConfig } from '@n8n/config';
+import type { User } from '@n8n/db';
+import { Container } from '@n8n/di';
+import type express from 'express';
 
-import { randomEmail, randomName, randomValidPassword } from '../shared/random';
-import * as utils from '../shared/utils/';
-import { sampleConfig } from './sampleMetadata';
+import { BadRequestError } from '@/errors/response-errors/bad-request.error';
+import { setSamlLoginEnabled } from '@/sso.ee/saml/saml-helpers';
+import { SamlService } from '@/sso.ee/saml/saml.service.ee';
+import {
+	getCurrentAuthenticationMethod,
+	setCurrentAuthenticationMethod,
+} from '@/sso.ee/sso-helpers';
+
+import { sampleConfig } from './sample-metadata';
 import { createOwner, createUser } from '../shared/db/users';
+import type { SuperAgentTest } from '../shared/types';
+import * as utils from '../shared/utils/';
 
 let someUser: User;
 let owner: User;
@@ -27,12 +31,17 @@ const testServer = utils.setupTestServer({
 	enabledFeatures: ['feat:saml'],
 });
 
+const memberPassword = randomValidPassword();
+
 beforeAll(async () => {
 	owner = await createOwner();
-	someUser = await createUser();
+	someUser = await createUser({ password: memberPassword });
 	authOwnerAgent = testServer.authAgentFor(owner);
 	authMemberAgent = testServer.authAgentFor(someUser);
+	Container.get(GlobalConfig).sso.saml.loginEnabled = true;
 });
+
+beforeEach(async () => await enableSaml(false));
 
 describe('Instance owner', () => {
 	describe('PATCH /me', () => {
@@ -65,10 +74,11 @@ describe('Instance owner', () => {
 	describe('PATCH /password', () => {
 		test('should throw BadRequestError if password is changed when SAML is enabled', async () => {
 			await enableSaml(true);
-			await authOwnerAgent
+			await authMemberAgent
 				.patch('/me/password')
 				.send({
-					password: randomValidPassword(),
+					currentPassword: memberPassword,
+					newPassword: randomValidPassword(),
 				})
 				.expect(400, {
 					code: 400,
@@ -87,6 +97,17 @@ describe('Instance owner', () => {
 				})
 				.expect(200);
 			expect(getCurrentAuthenticationMethod()).toBe('saml');
+		});
+
+		test('should return 400 on invalid config', async () => {
+			await authOwnerAgent
+				.post('/sso/saml/config')
+				.send({
+					...sampleConfig,
+					loginBinding: 'invalid',
+				})
+				.expect(400);
+			expect(getCurrentAuthenticationMethod()).toBe('email');
 		});
 	});
 
@@ -266,88 +287,85 @@ describe('Check endpoint permissions', () => {
 	});
 });
 
-describe('SAML login flow', () => {
-	beforeEach(async () => {
-		await enableSaml(true);
+describe('SAML email validation', () => {
+	let samlService: SamlService;
+
+	beforeAll(async () => {
+		samlService = Container.get(SamlService);
 	});
 
-	test('should trigger onUserLoginSuccess hook', async () => {
-		const mockedHandleSamlLogin = jest.spyOn(Container.get(SamlService), 'handleSamlLogin');
+	describe('handleSamlLogin', () => {
+		test('should throw BadRequestError for invalid email format', async () => {
+			// Mock getAttributesFromLoginResponse to return invalid email
+			jest.spyOn(samlService, 'getAttributesFromLoginResponse').mockResolvedValue({
+				email: 'invalid-email-format',
+				firstName: 'John',
+				lastName: 'Doe',
+				userPrincipalName: 'john.doe',
+			});
 
-		mockedHandleSamlLogin.mockImplementation(
-			async (): Promise<{
-				authenticatedUser: User;
-				attributes: SamlUserAttributes;
-				onboardingRequired: false;
-			}> => {
-				return {
-					authenticatedUser: someUser,
-					attributes: {
-						email: someUser.email,
-						firstName: someUser.firstName,
-						lastName: someUser.lastName,
-						userPrincipalName: someUser.email,
-					},
-					onboardingRequired: false,
-				};
+			const mockRequest = {} as express.Request;
+
+			await expect(samlService.handleSamlLogin(mockRequest, 'post')).rejects.toThrow(
+				new BadRequestError('Invalid email format'),
+			);
+		});
+
+		test.each([['not-an-email'], ['@missinglocal.com'], ['missing@.com'], ['spaces in@email.com']])(
+			'should throw BadRequestError for invalid email <%s>',
+			async (invalidEmail) => {
+				jest.spyOn(samlService, 'getAttributesFromLoginResponse').mockResolvedValue({
+					email: invalidEmail,
+					firstName: 'John',
+					lastName: 'Doe',
+					userPrincipalName: 'john.doe',
+				});
+
+				const mockRequest = {} as express.Request;
+
+				await expect(samlService.handleSamlLogin(mockRequest, 'post')).rejects.toThrow(
+					new BadRequestError('Invalid email format'),
+				);
 			},
 		);
 
-		const mockedHookOnUserLoginSuccess = jest.spyOn(
-			Container.get(InternalHooks),
-			'onUserLoginSuccess',
-		);
-		mockedHookOnUserLoginSuccess.mockImplementation(
-			async (userLoginData: { user: User; authenticationMethod: AuthenticationMethod }) => {
-				expect(userLoginData.authenticationMethod).toEqual('saml');
-				return;
-			},
-		);
-		await authOwnerAgent.post('/sso/saml/acs').expect(302);
-		expect(mockedHookOnUserLoginSuccess).toBeCalled();
-		mockedHookOnUserLoginSuccess.mockRestore();
-		mockedHandleSamlLogin.mockRestore();
-	});
+		test.each([
+			['user@example.com'],
+			['test.email@domain.org'],
+			['user+tag@example.com'],
+			['user123@test-domain.com'],
+		])('should handle valid email <%s> successfully', async (validEmail) => {
+			const mockRequest = {} as express.Request;
 
-	test('should trigger onUserLoginFailed hook', async () => {
-		const mockedHandleSamlLogin = jest.spyOn(Container.get(SamlService), 'handleSamlLogin');
+			jest.spyOn(samlService, 'getAttributesFromLoginResponse').mockResolvedValue({
+				email: validEmail,
+				firstName: 'John',
+				lastName: 'Doe',
+				userPrincipalName: 'john.doe',
+			});
 
-		mockedHandleSamlLogin.mockImplementation(
-			async (): Promise<{
-				authenticatedUser: User | undefined;
-				attributes: SamlUserAttributes;
-				onboardingRequired: false;
-			}> => {
-				return {
-					authenticatedUser: undefined,
-					attributes: {
-						email: someUser.email,
-						firstName: someUser.firstName,
-						lastName: someUser.lastName,
-						userPrincipalName: someUser.email,
-					},
-					onboardingRequired: false,
-				};
-			},
-		);
+			// Should not throw an error for valid emails
+			const result = await samlService.handleSamlLogin(mockRequest, 'post');
+			expect(result).toBeDefined();
+			expect(result.attributes.email).toBe(validEmail);
+		});
 
-		const mockedHookOnUserLoginFailed = jest.spyOn(
-			Container.get(InternalHooks),
-			'onUserLoginFailed',
-		);
-		mockedHookOnUserLoginFailed.mockImplementation(
-			async (userLoginData: {
-				user: string;
-				authenticationMethod: AuthenticationMethod;
-				reason?: string;
-			}) => {
-				expect(userLoginData.authenticationMethod).toEqual('saml');
-				return;
-			},
-		);
-		await authOwnerAgent.post('/sso/saml/acs').expect(401);
-		expect(mockedHookOnUserLoginFailed).toBeCalled();
-		mockedHookOnUserLoginFailed.mockRestore();
-		mockedHandleSamlLogin.mockRestore();
+		test('should convert email to lowercase before validation', async () => {
+			const upperCaseEmail = 'USER@EXAMPLE.COM';
+
+			jest.spyOn(samlService, 'getAttributesFromLoginResponse').mockResolvedValue({
+				email: upperCaseEmail,
+				firstName: 'John',
+				lastName: 'Doe',
+				userPrincipalName: 'john.doe',
+			});
+
+			const mockRequest = {} as express.Request;
+
+			// Should not throw an error as the email is valid when converted to lowercase
+			const result = await samlService.handleSamlLogin(mockRequest, 'post');
+			expect(result).toBeDefined();
+			expect(result.attributes.email).toBe(upperCaseEmail); // Original email should be preserved in attributes
+		});
 	});
 });

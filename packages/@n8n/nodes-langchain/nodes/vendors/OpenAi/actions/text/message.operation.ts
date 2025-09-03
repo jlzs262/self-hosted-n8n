@@ -1,3 +1,5 @@
+import type { Tool } from '@langchain/core/tools';
+import _omit from 'lodash/omit';
 import type {
 	INodeProperties,
 	IExecuteFunctions,
@@ -5,16 +7,17 @@ import type {
 	IDataObject,
 } from 'n8n-workflow';
 import { jsonParse, updateDisplayOptions } from 'n8n-workflow';
-import type { Tool } from '@langchain/core/tools';
-import { apiRequest } from '../../transport';
+
+import { getConnectedTools } from '@utils/helpers';
+
+import { MODELS_NOT_SUPPORT_FUNCTION_CALLS } from '../../helpers/constants';
 import type { ChatCompletion } from '../../helpers/interfaces';
 import { formatToOpenAIAssistantTool } from '../../helpers/utils';
+import { apiRequest } from '../../transport';
 import { modelRLC } from '../descriptions';
-import { getConnectedTools } from '../../../../../utils/helpers';
-import { MODELS_NOT_SUPPORT_FUNCTION_CALLS } from '../../helpers/constants';
 
 const properties: INodeProperties[] = [
-	modelRLC,
+	modelRLC('modelSearch'),
 	{
 		displayName: 'Messages',
 		name: 'messages',
@@ -31,11 +34,12 @@ const properties: INodeProperties[] = [
 				name: 'values',
 				values: [
 					{
-						displayName: 'Text',
+						displayName: 'Prompt',
 						name: 'content',
 						type: 'string',
 						description: 'The content of the message to be send',
 						default: '',
+						placeholder: 'e.g. Hello, how can you help me?',
 						typeOptions: {
 							rows: 2,
 						},
@@ -170,6 +174,51 @@ const properties: INodeProperties[] = [
 					'An alternative to sampling with temperature, controls diversity via nucleus sampling: 0.5 means half of all likelihood-weighted options are considered. We generally recommend altering this or temperature but not both.',
 				type: 'number',
 			},
+			{
+				displayName: 'Reasoning Effort',
+				name: 'reasoning_effort',
+				default: 'medium',
+				description:
+					'Controls the amount of reasoning tokens to use. A value of "low" will favor speed and economical token usage, "high" will favor more complete reasoning at the cost of more tokens generated and slower responses.',
+				type: 'options',
+				options: [
+					{
+						name: 'Low',
+						value: 'low',
+						description: 'Favors speed and economical token usage',
+					},
+					{
+						name: 'Medium',
+						value: 'medium',
+						description: 'Balance between speed and reasoning accuracy',
+					},
+					{
+						name: 'High',
+						value: 'high',
+						description:
+							'Favors more complete reasoning at the cost of more tokens generated and slower responses',
+					},
+				],
+				displayOptions: {
+					show: {
+						// reasoning_effort is only available on o1, o1-versioned, or on o3-mini and beyond, and gpt-5 models. Not on o1-mini or other GPT-models.
+						'/modelId': [{ _cnd: { regex: '(^o1([-\\d]+)?$)|(^o[3-9].*)|(^gpt-5.*)' } }],
+					},
+				},
+			},
+			{
+				displayName: 'Max Tool Calls Iterations',
+				name: 'maxToolsIterations',
+				type: 'number',
+				default: 15,
+				description:
+					'The maximum number of tool iteration cycles the LLM will run before stopping. A single iteration can contain multiple tool calls. Set to 0 for no limit.',
+				displayOptions: {
+					show: {
+						'@version': [{ _cnd: { gte: 1.5 } }],
+					},
+				},
+			},
 		],
 	},
 ];
@@ -189,9 +238,13 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 	let messages = this.getNodeParameter('messages.values', i, []) as IDataObject[];
 	const options = this.getNodeParameter('options', i, {});
 	const jsonOutput = this.getNodeParameter('jsonOutput', i, false) as boolean;
+	const maxToolsIterations =
+		nodeVersion >= 1.5 ? (this.getNodeParameter('options.maxToolsIterations', i, 15) as number) : 0;
+
+	const abortSignal = this.getExecutionCancelSignal();
 
 	if (options.maxTokens !== undefined) {
-		options.max_tokens = options.maxTokens;
+		options.max_completion_tokens = options.maxTokens;
 		delete options.maxTokens;
 	}
 
@@ -219,7 +272,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 
 	if (hideTools !== 'hide') {
 		const enforceUniqueNames = nodeVersion > 1;
-		externalTools = await getConnectedTools(this, enforceUniqueNames);
+		externalTools = await getConnectedTools(this, enforceUniqueNames, false);
 	}
 
 	if (externalTools.length) {
@@ -231,7 +284,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		messages,
 		tools,
 		response_format,
-		...options,
+		..._omit(options, ['maxToolsIterations']),
 	};
 
 	let response = (await apiRequest.call(this, 'POST', '/chat/completions', {
@@ -240,9 +293,17 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 
 	if (!response) return [];
 
+	let currentIteration = 1;
 	let toolCalls = response?.choices[0]?.message?.tool_calls;
 
 	while (toolCalls?.length) {
+		// Break the loop if the max iterations is reached or the execution is canceled
+		if (
+			abortSignal?.aborted ||
+			(maxToolsIterations > 0 && currentIteration >= maxToolsIterations)
+		) {
+			break;
+		}
 		messages.push(response.choices[0].message);
 
 		for (const toolCall of toolCalls) {
@@ -253,7 +314,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 			for (const tool of externalTools ?? []) {
 				if (tool.name === functionName) {
 					const parsedArgs: { input: string } = jsonParse(functionArgs);
-					const functionInput = parsedArgs.input ?? functionArgs;
+					const functionInput = parsedArgs.input ?? parsedArgs ?? functionArgs;
 					functionResponse = await tool.invoke(functionInput);
 				}
 			}
@@ -274,6 +335,7 @@ export async function execute(this: IExecuteFunctions, i: number): Promise<INode
 		})) as ChatCompletion;
 
 		toolCalls = response.choices[0].message.tool_calls;
+		currentIteration += 1;
 	}
 
 	if (response_format) {

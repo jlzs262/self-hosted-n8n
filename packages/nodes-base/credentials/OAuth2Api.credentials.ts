@@ -66,6 +66,9 @@ export class OAuth2Api implements ICredentialType {
 			default: '',
 			required: true,
 		},
+		// WARNING: if you are extending from this credentials and allow user to set their own scopes
+		// you HAVE TO add it to GENERIC_OAUTH2_CREDENTIALS_WITH_EDITABLE_SCOPE in packages/cli/src/constants.ts
+		// track any updates to this behavior in N8N-7424
 		{
 			displayName: 'Scope',
 			name: 'scope',
@@ -105,7 +108,35 @@ export class OAuth2Api implements ICredentialType {
 			default: 'header',
 		},
 		{
-			displayName: 'Ignore SSL Issues',
+			displayName: 'Send Additional Body Properties',
+			name: 'sendAdditionalBodyProperties',
+			type: 'boolean',
+			default: false,
+			displayOptions: {
+				show: {
+					grantType: ['clientCredentials'],
+					authentication: ['body'],
+				},
+			},
+		},
+		{
+			displayName: 'Additional Body Properties',
+			name: 'additionalBodyProperties',
+			type: 'json',
+			typeOptions: {
+				rows: 5,
+			},
+			displayOptions: {
+				show: {
+					grantType: ['clientCredentials'],
+					authentication: ['body'],
+					sendAdditionalBodyProperties: [true],
+				},
+			},
+			default: '',
+		},
+		{
+			displayName: 'Ignore SSL Issues (Insecure)',
 			name: 'ignoreSSLIssues',
 			type: 'boolean',
 			default: false,
